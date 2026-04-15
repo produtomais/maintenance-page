@@ -502,21 +502,12 @@
         </svg>
         Avise-me quando o sistema voltar
       </a>
-      
+
       <div class="footer-msg">
         <span class="signature">Guilherme Gonçalves da Silva</span>
         <span class="role">Diretor de Produto Digital</span>
-        <span class="company" id="company-name" style="display: block; margin-top: 0.5rem; opacity: 0.5;"></span>
       </div>
     </div>
   </div>
-
-  <script>
-    fetch('https://empresamais-com-br.github.io/brand-assets/brand/company.json')
-      .then(r => r.json())
-      .then(data => {
-        document.getElementById('company-name').textContent = data.name;
-      });
-  </script>
 </body>
 </html>
