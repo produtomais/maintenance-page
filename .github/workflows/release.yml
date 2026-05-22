@@ -1,0 +1,8 @@
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  release:
+    uses: produtomais/.github/.github/workflows/release-please.yml@v1
+    secrets: inherit
