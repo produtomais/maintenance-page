@@ -1,0 +1,8 @@
+name: "FR — Staging: backmerge from main"
+on:
+  push:
+    branches: [main]
+jobs:
+  backmerge:
+    uses: produtomais/.github/.github/workflows/fr-staging-backmerge-from-main.yml@v1
+    secrets: inherit
