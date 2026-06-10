@@ -1,0 +1,180 @@
+# Break-glass operacional para limpar uma branch staging contaminada por
+# tentativas, backmerges ou squash cycles.
+#
+# O QUE FAZ
+# Reseta refs/heads/staging para o SHA atual de refs/heads/main no repo
+# alvo, depois de criar branch de backup com o estado anterior de staging.
+# Nunca toca em main.
+#
+# PRINCIPIOS DE DESIGN (porque cada decisao existe)
+#
+# 1. Nao roda em schedule. So workflow_dispatch.
+#    Schedule nao e apropriado para operacao destrutiva; reset exige
+#    decisao humana contextual no momento da execucao.
+#
+# 2. Exige expected_main_sha E expected_staging_sha (nao so um).
+#    Race condition pode acontecer em qualquer dos dois lados entre voce
+#    inspecionar e o workflow rodar. Validar ambos garante que o estado
+#    descartado (staging) e o destino (main) sao exatamente os que voce
+#    auditou. Se qualquer um mudou, aborta sem tocar em ref nenhuma.
+#
+# 3. Confirmacao literal carrega o nome do repo no texto.
+#    "RESET produtomais/<repo> STAGING TO MAIN" forca consciencia do
+#    alvo. Anti copy-paste de aba/memoria errada: a string nao serve
+#    pra dois repos diferentes.
+#
+# 4. Cria branch de backup antes de mover staging.
+#    Operacao e destrutiva mas reversivel por design. archive/staging-
+#    before-reset-<repo>-<timestamp>-<run_id> preserva o estado anterior;
+#    se o reset estiver errado, recupera via cherry-pick ou reset reverso.
+#
+# 5. Atualiza somente refs/heads/staging. Main e read-only no workflow.
+#    Escopo cirurgico reduz superficie de erro: nao ha caminho de codigo
+#    que toque em main, mesmo com bug ou input malicioso.
+#
+# 6. Token do App escopado SO ao repo alvo (repositories: target_repo).
+#    Menor privilegio: o token emitido para esta execucao fica limitado
+#    ao repo alvo. Se for exposto por qualquer caminho (memory dump no
+#    runner, exfiltracao por step adversario), blast radius = 1 repo,
+#    nao a org inteira.
+#
+# 7. dry_run default true.
+#    Preview obrigatorio antes de aplicar. Voce ve quais SHAs seriam
+#    movidos, qual backup seria criado. Ops destrutiva sem preview e
+#    aposta cega.
+#
+# Uso esperado:
+# 1. Conferir SHA atual de main E staging do repo alvo (gh api ou UI).
+# 2. Rodar com dry_run=true para validar o resultado.
+# 3. Rodar com dry_run=false e confirmacao literal exata.
+
+name: "Staging reset"
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Repo alvo sem owner (ex: .github, achebus, tfscope)"
+        required: true
+        type: string
+      expected_main_sha:
+        description: "SHA exato esperado de refs/heads/main no repo alvo"
+        required: true
+        type: string
+      expected_staging_sha:
+        description: "SHA exato esperado de refs/heads/staging no repo alvo (o que vai pro backup)"
+        required: true
+        type: string
+      confirmation:
+        description: "Digite exatamente: RESET produtomais/<repo> STAGING TO MAIN"
+        required: true
+        type: string
+      dry_run:
+        description: "Nao altera refs; apenas mostra o que faria"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Operacao destrutiva: 1 reset por repo de cada vez.
+# cancel-in-progress: false porque interromper no meio pode deixar
+# refs em estado inconsistente.
+concurrency:
+  group: reset-staging-${{ inputs.target_repo }}
+  cancel-in-progress: false
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Gera token do App escopado SO ao repo alvo"
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: produtomais
+          repositories: ${{ inputs.target_repo }}
+
+      - name: "Reset staging ref to main ref"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          EXPECTED_STAGING_SHA: ${{ inputs.expected_staging_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          # target_repo: nomes de repo do GitHub aceitam [A-Za-z0-9._-].
+          # Bloqueia vazio, '.', '..', e qualquer char fora do conjunto.
+          [ -n "$TARGET_REPO" ] || fail "target_repo vazio"
+          case "$TARGET_REPO" in
+            "."|".."|*[!A-Za-z0-9._-]*) fail "target_repo invalido (use apenas [A-Za-z0-9._-])" ;;
+          esac
+
+          expected_confirmation="RESET produtomais/$TARGET_REPO STAGING TO MAIN"
+          [ "$CONFIRMATION" = "$expected_confirmation" ] || fail "Confirmacao literal invalida. Esperado: '$expected_confirmation'"
+
+          case "$EXPECTED_MAIN_SHA" in
+            *[!0-9a-fA-F]*|"") fail "expected_main_sha deve ser SHA hexadecimal" ;;
+          esac
+          case "$EXPECTED_STAGING_SHA" in
+            *[!0-9a-fA-F]*|"") fail "expected_staging_sha deve ser SHA hexadecimal" ;;
+          esac
+
+          echo "## Reset staging to main" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Repo**: \`produtomais/$TARGET_REPO\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Dry-run**: \`$DRY_RUN\`" >> "$GITHUB_STEP_SUMMARY"
+
+          main_sha=$(gh api "/repos/produtomais/$TARGET_REPO/branches/main" --jq '.commit.sha')
+          staging_sha=$(gh api "/repos/produtomais/$TARGET_REPO/branches/staging" --jq '.commit.sha')
+
+          [ "$main_sha" = "$EXPECTED_MAIN_SHA" ] || fail "main SHA mudou. Esperado $EXPECTED_MAIN_SHA, atual $main_sha"
+          [ "$staging_sha" = "$EXPECTED_STAGING_SHA" ] || fail "staging SHA mudou. Esperado $EXPECTED_STAGING_SHA, atual $staging_sha"
+
+          timestamp=$(date -u +%Y%m%d-%H%M%S)
+          safe_repo=$(printf '%s' "$TARGET_REPO" | tr -c 'A-Za-z0-9._-' '-')
+          backup_branch="archive/staging-before-reset-${safe_repo}-${timestamp}-${GITHUB_RUN_ID}"
+          backup_ref="refs/heads/$backup_branch"
+
+          {
+            echo "- **Main SHA**: \`$main_sha\`"
+            echo "- **Staging antes**: \`$staging_sha\`"
+            echo "- **Backup branch**: \`$backup_branch\`"
+            echo "- **Backup URL**: https://github.com/produtomais/$TARGET_REPO/tree/$backup_branch"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$staging_sha" = "$main_sha" ]; then
+            echo "::notice::staging ja aponta para main. Nada a fazer."
+            echo "- **Resultado**: staging ja estava igual a main" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::DRY-RUN: criaria backup e moveria staging para main."
+            echo "- **Resultado**: dry-run, nenhuma ref alterada" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh api --method POST "/repos/produtomais/$TARGET_REPO/git/refs" \
+            -f ref="$backup_ref" \
+            -f sha="$staging_sha" >/dev/null
+
+          gh api --method PATCH "/repos/produtomais/$TARGET_REPO/git/refs/heads/staging" \
+            -f sha="$main_sha" \
+            -F force=true >/dev/null
+
+          new_staging_sha=$(gh api "/repos/produtomais/$TARGET_REPO/branches/staging" --jq '.commit.sha')
+          [ "$new_staging_sha" = "$main_sha" ] || fail "Reset falhou: staging ficou em $new_staging_sha"
+
+          {
+            echo "- **Staging depois**: \`$new_staging_sha\`"
+            echo "- **Resultado**: staging resetada para main com backup criado"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,40 @@
+name: "PR title validator"
+
+# Valida Conventional Commits no título do PR. Forçado em todos os repos da org
+# via ruleset "Require workflows to pass" — zero stub no consumidor.
+#
+# Endurecendo a main: só passam os tipos que GERAM release — feat, fix, revert
+# (+ feat!/fix!/revert! ou BREAKING CHANGE → major). Os que não versionam
+# (chore, docs, style, refactor, test, perf, ci, build) são bloqueados, pra
+# nenhuma mudança entrar na main sem virar versão.
+#
+# Exceção: o PR de release do release-please (branch `release-please--*`) passa
+# sem validar tipo — é o único `chore` liberado, e só pro bot.
+#
+# Limitação conhecida: required workflows IGNORAM filtros de 'types:' e rodam só
+# nos defaults (opened, synchronize, reopened) — editar só o título não reexecuta
+# o check. Backstop: commit_message_pattern no ruleset valida o squash na main.
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title-validator:
+    name: pr-title-validator
+    runs-on: ubuntu-latest
+    steps:
+      - name: "PR de release do bot — único chore liberado, não valida tipo"
+        if: ${{ startsWith(github.head_ref, 'release-please--') }}
+        run: echo "release-please PR — chore liberado pro bot."
+      - uses: amannn/action-semantic-pull-request@v6.1.1
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            revert

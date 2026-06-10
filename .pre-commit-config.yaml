@@ -1,0 +1,51 @@
+# Checks LOCAIS, no teu clone — em dois momentos: no commit e na mensagem do commit.
+# É conveniência/feedback rápido, NÃO enforcement (bypassável).
+#
+# - NÃO gera nada em GitHub Actions nem workflow — roda só na tua máquina.
+# - O gatilho é um git hook em .git/hooks/, que NÃO é versionado.
+# - O ÚNICO file que vai pro repo é este .pre-commit-config.yaml.
+# - Ativa no clone com:  pre-commit install
+#
+# Teste NÃO roda aqui — hook local é só pra check rápido e sem infra (formato,
+# whitespace, mensagem). Onde o teste roda fica a critério de cada repo.
+default_install_hook_types: [pre-commit, commit-msg]
+# hooks sem `stages:` próprio rodam só no commit.
+default_stages: [pre-commit]
+
+repos:
+  # ════════════ NO COMMIT — limpeza e segurança ════════════
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace      # tira espaço no fim das linhas
+      - id: end-of-file-fixer        # garante newline no fim do file
+      - id: detect-private-key       # bloqueia chave privada no commit
+
+  # mix format — só quando há .ex/.exs no commit (dormente em repo não-Elixir).
+  # FORMATA os files staged; se mexeu em algo, o commit falha → git add + commita formatado.
+  - repo: local
+    hooks:
+      - id: mix-format
+        name: mix format
+        entry: mix format
+        language: system
+        files: \.exs?$
+
+  # ════════════ NA MENSAGEM do commit — Conventional Commits ════════════
+  # bump da rev com: pre-commit autoupdate
+  #
+  # Formato:  tipo: descrição      (ou  tipo!: ...  → breaking change = MAJOR)
+  # Exemplos de `git commit -m`:
+  #   feat: adiciona login com Google
+  #   fix: corrige cálculo de juros
+  #   docs: atualiza o README
+  #   chore: bump de dependências
+  #   refactor: extrai o módulo de auth
+  #   test: cobre caso de borda do parser
+  #   feat!: remove o endpoint v1        ← o "!" = quebra compatibilidade
+  # Tipos: feat fix docs chore refactor test style perf ci build revert
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit  # rejeita o commit se a mensagem não seguir o padrão
+        stages: [commit-msg]

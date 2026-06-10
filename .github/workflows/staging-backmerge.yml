@@ -1,0 +1,87 @@
+name: "Staging backmerge"
+
+# Backmerge main → staging APENAS no repo do contexto (caller).
+# Garante isolamento: nenhum evento de um repo modifica branches de outro.
+#
+# Quando invocado via workflow_call (stub backmerge.yml no repo caller):
+#   - github.repository = owner/repo do caller
+#   - Backmerge é aplicado SÓ nesse repo
+#
+# Quando invocado via workflow_dispatch direto neste .github:
+#   - github.repository = produtomais/.github
+#   - Backmerge é aplicado SÓ no .github
+#
+# Mecanismo: POST /repos/{owner}/{repo}/merges com base=staging head=main.
+# Cria merge commit de 2 pais. Idempotente: se staging já contém main
+# (ahead=0), skip silencioso.
+#
+# Pré-requisito de ruleset (depois do split builtin-main-protection):
+# - staging NAO tem required_linear_history (permite merge commit)
+# - App produtomais-bot esta em bypass_actors do ruleset de staging
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backmerge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Gera token do App escopado ao repo do caller"
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: produtomais
+          repositories: ${{ github.event.repository.name }}
+
+      - name: "Backmerge main into staging"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "## Backmerge main into staging" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Repo:** \`$REPO\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Existe staging e main?
+          main_sha=$(gh api "/repos/$REPO/branches/main" --jq '.commit.sha' 2>/dev/null || echo "")
+          staging_sha=$(gh api "/repos/$REPO/branches/staging" --jq '.commit.sha' 2>/dev/null || echo "")
+          if [ -z "$main_sha" ] || [ -z "$staging_sha" ]; then
+            echo "skip: repo sem main ou staging" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Main ja esta em staging?
+          ahead=$(gh api "/repos/$REPO/compare/staging...main" --jq '.ahead_by' 2>/dev/null || echo "0")
+          if [ "$ahead" = "0" ] || [ "$ahead" = "null" ]; then
+            echo "skip: staging já contém main (ahead=0)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "main ahead by: $ahead — fazendo backmerge" >> "$GITHUB_STEP_SUMMARY"
+
+          # POST /merges: cria merge commit em staging com main como head
+          msg="chore: backmerge main into staging"
+          if output=$(gh api --method POST "/repos/$REPO/merges" \
+              -f base=staging -f head=main -f commit_message="$msg" 2>&1); then
+            new_sha=$(echo "$output" | jq -r '.sha' 2>/dev/null || echo "")
+            echo "✅ merged — new staging sha: \`${new_sha:0:7}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # 204 No Content = nothing to merge (race com outro process). Trata como sucesso.
+            if echo "$output" | grep -q "Already merged\|204"; then
+              echo "✅ noop — já mergeado (race)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "❌ falha no backmerge" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error title=Falha backmerge em $REPO::$output"
+              exit 1
+            fi
+          fi
