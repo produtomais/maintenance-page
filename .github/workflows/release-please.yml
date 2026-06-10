@@ -1,0 +1,68 @@
+# Roda release-please pra gerenciar versionamento SemVer baseado em
+# Conventional Commits.
+#
+# Como consumer invoca:
+#   jobs:
+#     release:
+#       uses: produtomais/.github/.github/workflows/release-please.yml@v1
+#       secrets:
+#         APP_ID: ${{ secrets.APP_ID }}
+#         APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+#
+# release-please decide se vale lançar nova versão baseado nos
+# Conventional Commits desde a última tag:
+# - feat → MINOR bump
+# - fix/perf → PATCH bump
+# - feat! ou BREAKING CHANGE no body → MAJOR
+# - docs/chore/test/style/refactor/ci/build → sem release
+#
+# Pré-requisito no repo consumidor:
+#   release-please-config.json    (raiz do repo)
+#   .release-please-manifest.json (raiz do repo)
+#   Org secrets APP_ID + APP_PRIVATE_KEY (já configurados org-wide)
+#
+# Por que App token e não GITHUB_TOKEN: workflows triggered por
+# GITHUB_TOKEN não disparam downstream workflows (anti-loop do GitHub).
+# Com App token, eventos como 'release: published' acionam
+# move-major-tag.yml normalmente — sem precisar de empty
+# commit manual ou mover tag à mão.
+
+name: "Release Please"
+
+on:
+  workflow_call:
+    secrets:
+      APP_ID:
+        required: true
+        description: "ID do GitHub App produtomais-bot"
+      APP_PRIVATE_KEY:
+        required: true
+        description: "Private key do GitHub App produtomais-bot"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: "Gera token do GitHub App produtomais-bot"
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: "Roda release-please (abre/atualiza PR de release ou cria tag)"
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
