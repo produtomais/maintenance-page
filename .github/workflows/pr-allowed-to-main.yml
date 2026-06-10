@@ -1,0 +1,47 @@
+name: "PR allowed to main"
+
+# Required workflow via ruleset (em TODOS os repos da org, via
+# pr-allowed-to-main que mira ~ALL).
+# Valida que PRs pra main vêm de staging ou do release-please bot.
+# Garante a regra universal: dev → staging → main em todo repo.
+#
+# Exceções permitidas:
+# - staging: fluxo normal de promoção
+# - release-please--*: PR de release versionada (artefato técnico, não feature)
+#
+# Hotfix removido propositalmente: até a política de hotfix ser formalizada
+# (label emergency + approval admin + audit trail), nenhum bypass por nome
+# de branch. Hotfix hoje passa pelo fluxo normal: hotfix/X → staging → main.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-allowed-to-main:
+    name: pr-allowed-to-main
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check head branch is staging or release-please bot"
+        env:
+          HEAD: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Sem self-bypass: .github respeita a mesma regra dos consumidores.
+          # Toda mudança humana neste repo passa por feature → staging → main.
+          # Único bypass técnico: release-please-- (artefato de release, abaixo).
+          if [ "$HEAD" = "staging" ]; then
+            echo "::notice::PR origem em staging — promoção válida"
+            exit 0
+          fi
+          if [[ "$HEAD" =~ ^release-please-- ]]; then
+            echo "::notice::PR do release-please bot — bypass técnico válido"
+            exit 0
+          fi
+          echo "::error title=Main promotion violated::main aceita PR só de staging ou release-please--. Origem atual: '$HEAD'. Pra hotfix, use fluxo normal: hotfix/X → staging → main."
+          exit 1
