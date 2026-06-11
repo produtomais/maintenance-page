@@ -20,6 +20,8 @@ repos:
       - id: trailing-whitespace      # tira espaço no fim das linhas
       - id: end-of-file-fixer        # garante newline no fim do file
       - id: detect-private-key       # bloqueia chave privada no commit
+      - id: no-commit-to-branch      # bloqueia commit local direto na main — só via branch → PR
+        args: [--branch, main]
 
   # mix format — só quando há .ex/.exs no commit (dormente em repo não-Elixir).
   # FORMATA os files staged; se mexeu em algo, o commit falha → git add + commita formatado.
